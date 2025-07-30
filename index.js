@@ -70,4 +70,4 @@ process.on('unhandledRejection', error => {
     logToFile(`Unhandled rejection: ${error.message}`);
 });
 
-client.login('MTMzNzE1NzE3NjQ5MzQ3Mzk3NA.GXeVnW.6raDBH8Cj2vf2f8cKFqc_xBek5hY9R60QHdprI');
+client.login('token');
