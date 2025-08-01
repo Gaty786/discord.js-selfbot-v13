@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Selfbot Dashboard</title>
+    <style>
+        :root {
+            --online: #43b581;
+            --offline: #747f8d;
+            --dnd: #f04747;
+            --idle: #faa61a;
+            --card-bg: #2f3136;
+            --bg-color: #36393f;
+            --text-color: #dcddde;
+            --text-muted: #72767d;
+        }
+        
+        body {
+            font-family: 'Whitney', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 30px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #202225;
+        }
+        
+        .avatar {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            object-fit: cover;
+            margin-right: 20px;
+            border: 3px solid currentColor;
+        }
+        
+        .status-badge {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        
+        .status-online { background-color: var(--online); }
+        .status-offline { background-color: var(--offline); }
+        
+        .card {
+            background-color: var(--card-bg);
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        
+        .card-title {
+            font-size: 16px;
+            font-weight: 600;
+            margin-top: 0;
+            margin-bottom: 15px;
+            color: var(--text-color);
+        }
+        
+        .log-entry {
+            font-family: 'Consolas', monospace;
+            font-size: 14px;
+            padding: 8px 0;
+            border-bottom: 1px solid #202225;
+        }
+        
+        .log-timestamp {
+            color: var(--text-muted);
+            font-size: 12px;
+            margin-right: 10px;
+        }
+        
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+            gap: 20px;
+        }
+        
+        .scrollable {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .server-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        
+        .server-chip {
+            background-color: #202225;
+            padding: 5px 10px;
+            border-radius: 15px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <img id="bot-avatar" src="" class="avatar" alt="Bot Avatar">
+            <div>
+                <h1 id="bot-username">Loading...</h1>
+                <div>
+                    <span id="status-badge" class="status-badge status-offline"></span>
+                    <span id="status-text">Connecting...</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="grid">
+            <div class="card">
+                <h2 class="card-title">Bot Information</h2>
+                <div>
+                    <p><strong>Logged in as:</strong> <span id="bot-tag">-</span></p>
+                    <p><strong>Uptime:</strong> <span id="uptime">-</span></p>
+                    <p><strong>Last activity:</strong> <span id="last-activity">-</span></p>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h2 class="card-title">Connected Servers</h2>
+                <div class="server-list" id="server-list">
+                    <div class="server-chip">Loading...</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="grid">
+            <div class="card">
+                <h2 class="card-title">Message Logs</h2>
+                <div class="scrollable" id="message-logs">
+                    <div class="log-entry">
+                        <span class="log-timestamp">[00:00:00]</span>
+                        <span>Waiting for messages...</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h2 class="card-title">Voice Activities</h2>
+                <div class="scrollable" id="voice-logs">
+                    <div class="log-entry">
+                        <span class="log-timestamp">[00:00:00]</span>
+                        <span>Waiting for voice activity...</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // WebSocket connection to the bot's server
+        const socket = new WebSocket(`ws://${window.location.hostname}:${window.location.port || 80}/ws`);
+        
+        // Update bot status display
+        function updateStatus(data) {
+            document.getElementById('bot-avatar').src = data.avatar || 'https://cdn.discordapp.com/embed/avatars/0.png';
+            document.getElementById('bot-username').textContent = data.username || 'Unknown User';
+            document.getElementById('bot-tag').textContent = data.username || '-';
+            
+            const statusBadge = document.getElementById('status-badge');
+            const statusText = document.getElementById('status-text');
+            
+            if (data.loggedIn) {
+                statusBadge.className = 'status-badge status-online';
+                statusText.textContent = 'Online';
+            } else {
+                statusBadge.className = 'status-badge status-offline';
+                statusText.textContent = 'Offline';
+            }
+            
+            if (data.uptime) {
+                document.getElementById('uptime').textContent = formatUptime(data.uptime);
+            }
+            
+            if (data.lastActivity) {
+                document.getElementById('last-activity').textContent = new Date(data.lastActivity).toLocaleString();
+            }
+        }
+        
+        // Update server list
+        function updateServers(servers) {
+            const serverList = document.getElementById('server-list');
+            serverList.innerHTML = '';
+            
+            if (servers && servers.length > 0) {
+                servers.forEach(server => {
+                    const chip = document.createElement('div');
+                    chip.className = 'server-chip';
+                    chip.textContent = server;
+                    serverList.appendChild(chip);
+                });
+            } else {
+                serverList.innerHTML = '<div class="server-chip">No servers found</div>';
+            }
+        }
+        
+        // Add a log entry
+        function addLogEntry(containerId, timestamp, message) {
+            const container = document.getElementById(containerId);
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            
+            const timeSpan = document.createElement('span');
+            timeSpan.className = 'log-timestamp';
+            timeSpan.textContent = `[${new Date(timestamp).toLocaleTimeString()}]`;
+            
+            const messageSpan = document.createElement('span');
+            messageSpan.textContent = message;
+            
+            entry.appendChild(timeSpan);
+            entry.appendChild(messageSpan);
+            
+            container.insertBefore(entry, container.firstChild);
+            
+            // Limit to 100 entries
+            if (container.children.length > 100) {
+                container.removeChild(container.lastChild);
+            }
+        }
+        
+        // Format uptime
+        function formatUptime(seconds) {
+            const days = Math.floor(seconds / (3600 * 24));
+            const hours = Math.floor((seconds % (3600 * 24)) / 3600);
+            const mins = Math.floor((seconds % 3600) / 60);
+            const secs = Math.floor(seconds % 60);
+            
+            return `${days}d ${hours}h ${mins}m ${secs}s`;
+        }
+        
+        // WebSocket handlers
+        socket.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            
+            switch (data.type) {
+                case 'status':
+                    updateStatus(data.data);
+                    break;
+                case 'servers':
+                    updateServers(data.data);
+                    break;
+                case 'message':
+                    addLogEntry('message-logs', data.timestamp, data.message);
+                    break;
+                case 'voice':
+                    addLogEntry('voice-logs', data.timestamp, data.message);
+                    break;
+            }
+        };
+        
+        socket.onopen = () => {
+            console.log('Connected to WebSocket server');
+        };
+        
+        socket.onclose = () => {
+            console.log('Disconnected from WebSocket server');
+            document.getElementById('status-text').textContent = 'Disconnected';
+            document.getElementById('status-badge').className = 'status-badge status-offline';
+        };
+    </script>
+</body>
+</html>
