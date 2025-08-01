@@ -1,7 +1,10 @@
 const { Client } = require('discord.js-selfbot-v13');
 const fs = require('fs');
-require('dotenv').config(); // Load environment variables from .env file
+const express = require('express');
+const path = require('path');
+require('dotenv').config();
 
+const app = express();
 const client = new Client({ checkUpdate: false });
 
 // Config from environment variables
@@ -9,51 +12,104 @@ const TARGET_SERVER = process.env.TARGET_SERVER;
 const TARGET_CATEGORY = process.env.TARGET_CATEGORY;
 const SPECIAL_ROLE = process.env.SPECIAL_ROLE;
 const LOG_FILE = process.env.LOG_FILE || 'server_log.txt';
+const WEB_PORT = process.env.WEB_PORT || 3000;
 
-// Validate required environment variables
-const requiredVars = ['TARGET_SERVER', 'TARGET_CATEGORY', 'SPECIAL_ROLE', 'DISCORD_TOKEN'];
-for (const varName of requiredVars) {
-    if (!process.env[varName]) {
-        console.error(`Missing required environment variable: ${varName}`);
-        process.exit(1);
-    }
-}
+// Data storage for web interface
+let botStatus = {
+    loggedIn: false,
+    username: null,
+    avatar: null,
+    guilds: [],
+    messages: [],
+    voiceActivities: []
+};
 
-// Improved logging
+// Create web server
+app.use(express.static('public'));
+app.set('view engine', 'ejs');
+app.set('views', path.join(__dirname, 'views'));
+
+app.get('/', (req, res) => {
+    res.render('status', {
+        status: botStatus,
+        messages: botStatus.messages.slice().reverse(), // Show newest first
+        voiceActivities: botStatus.voiceActivities.slice().reverse()
+    });
+});
+
+app.get('/data', (req, res) => {
+    res.json(botStatus);
+});
+
+app.listen(WEB_PORT, () => {
+    console.log(`Web interface available at http://localhost:${WEB_PORT}`);
+});
+
+// Improved logging that also stores data for web interface
 function logToFile(message) {
     const timestamp = new Date().toISOString();
-    fs.appendFileSync(LOG_FILE, `[${timestamp}] ${message}\n`);
+    const logEntry = `[${timestamp}] ${message}`;
+    fs.appendFileSync(LOG_FILE, logEntry + '\n');
+    
+    // Store for web interface
+    botStatus.messages.push({
+        timestamp,
+        content: message
+    });
+    
+    // Keep only the last 100 messages
+    if (botStatus.messages.length > 100) {
+        botStatus.messages.shift();
+    }
 }
 
 client.on('ready', () => {
     console.log(`Logged in as ${client.user.tag}!`);
+    botStatus = {
+        ...botStatus,
+        loggedIn: true,
+        username: client.user.tag,
+        avatar: client.user.displayAvatarURL({ size: 256 }),
+        guilds: client.guilds.cache.map(g => g.name)
+    };
     logToFile(`Bot started as ${client.user.tag}`);
 });
 
-// Message logging
 client.on('messageCreate', (message) => {
     if (message.guild?.id === TARGET_SERVER) {
-        logToFile(`Message in #${message.channel.name} from ${message.author.tag}: ${message.content.substring(0, 100)}${message.content.length > 100 ? '...' : ''}`);
+        const shortContent = `${message.content.substring(0, 100)}${message.content.length > 100 ? '...' : ''}`;
+        logToFile(`Message in #${message.channel.name} from ${message.author.tag}: ${shortContent}`);
     }
 });
 
-// Voice activity logging
 client.on('voiceStateUpdate', (oldState, newState) => {
     if (oldState.guild.id !== TARGET_SERVER) return;
 
     const member = newState.member || oldState.member;
     if (!member) return;
 
+    let activity;
     if (!oldState.channelId && newState.channelId) {
-        logToFile(`${member.user.tag} joined voice channel ${newState.channel.name}`);
+        activity = `${member.user.tag} joined voice channel ${newState.channel.name}`;
     } else if (oldState.channelId && !newState.channelId) {
-        logToFile(`${member.user.tag} left voice channel ${oldState.channel.name}`);
+        activity = `${member.user.tag} left voice channel ${oldState.channel.name}`;
     } else if (oldState.channelId !== newState.channelId) {
-        logToFile(`${member.user.tag} switched from ${oldState.channel.name} to ${newState.channel.name}`);
+        activity = `${member.user.tag} switched from ${oldState.channel.name} to ${newState.channel.name}`;
+    }
+
+    if (activity) {
+        logToFile(activity);
+        botStatus.voiceActivities.push({
+            timestamp: new Date().toISOString(),
+            content: activity
+        });
+        
+        if (botStatus.voiceActivities.length > 50) {
+            botStatus.voiceActivities.shift();
+        }
     }
 });
 
-// Template sending (original functionality)
 client.on('channelCreate', async (channel) => {
     try {
         if (channel.guild.id === TARGET_SERVER && channel.parentId === TARGET_CATEGORY) {
@@ -86,7 +142,6 @@ Evidence:`;
     }
 });
 
-// Error handling
 process.on('unhandledRejection', error => {
     console.error('Unhandled rejection:', error);
     logToFile(`Unhandled rejection: ${error.message}`);
