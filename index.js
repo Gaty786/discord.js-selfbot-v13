@@ -2,67 +2,115 @@ const { Client } = require('discord.js-selfbot-v13');
 const fs = require('fs');
 const express = require('express');
 const path = require('path');
+const WebSocket = require('ws');
 require('dotenv').config();
 
+// Initialize Express app
 const app = express();
 const client = new Client({ checkUpdate: false });
 
-// Config from environment variables
+// Configuration
 const TARGET_SERVER = process.env.TARGET_SERVER;
 const TARGET_CATEGORY = process.env.TARGET_CATEGORY;
 const SPECIAL_ROLE = process.env.SPECIAL_ROLE;
 const LOG_FILE = process.env.LOG_FILE || 'server_log.txt';
 const WEB_PORT = process.env.WEB_PORT || 3000;
 
-// Data storage for web interface
+// Bot status data
 let botStatus = {
     loggedIn: false,
     username: null,
     avatar: null,
     guilds: [],
     messages: [],
-    voiceActivities: []
+    voiceActivities: [],
+    lastActivity: null
 };
 
-// Create web server
+// Setup Express server
 app.use(express.static('public'));
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 
 app.get('/', (req, res) => {
-    res.render('status', {
-        status: botStatus,
-        messages: botStatus.messages.slice().reverse(), // Show newest first
-        voiceActivities: botStatus.voiceActivities.slice().reverse()
+    res.sendFile(path.join(__dirname, 'public', 'dashboard.html'));
+});
+
+// Create HTTP server
+const server = app.listen(WEB_PORT, () => {
+    console.log(`Web dashboard available at http://localhost:${WEB_PORT}`);
+});
+
+// WebSocket Server
+const wss = new WebSocket.Server({ server });
+
+wss.on('connection', (ws) => {
+    // Send initial status
+    ws.send(JSON.stringify({
+        type: 'status',
+        data: {
+            loggedIn: botStatus.loggedIn,
+            username: botStatus.username,
+            avatar: botStatus.avatar,
+            uptime: process.uptime(),
+            lastActivity: botStatus.lastActivity
+        }
+    }));
+
+    // Send server list
+    ws.send(JSON.stringify({
+        type: 'servers',
+        data: botStatus.guilds
+    }));
+
+    // Send recent messages
+    botStatus.messages.slice(-10).reverse().forEach(msg => {
+        ws.send(JSON.stringify({
+            type: 'message',
+            timestamp: msg.timestamp,
+            message: msg.content
+        }));
+    });
+
+    // Send recent voice activities
+    botStatus.voiceActivities.slice(-10).reverse().forEach(activity => {
+        ws.send(JSON.stringify({
+            type: 'voice',
+            timestamp: activity.timestamp,
+            message: activity.content
+        }));
     });
 });
 
-app.get('/data', (req, res) => {
-    res.json(botStatus);
-});
-
-app.listen(WEB_PORT, () => {
-    console.log(`Web interface available at http://localhost:${WEB_PORT}`);
-});
-
-// Improved logging that also stores data for web interface
+// Enhanced logging function
 function logToFile(message) {
     const timestamp = new Date().toISOString();
     const logEntry = `[${timestamp}] ${message}`;
     fs.appendFileSync(LOG_FILE, logEntry + '\n');
     
     // Store for web interface
-    botStatus.messages.push({
-        timestamp,
-        content: message
-    });
+    const entry = { timestamp, content: message };
+    botStatus.messages.push(entry);
+    botStatus.lastActivity = timestamp;
     
     // Keep only the last 100 messages
     if (botStatus.messages.length > 100) {
         botStatus.messages.shift();
     }
+    
+    // Broadcast to all connected clients
+    wss.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({
+                type: 'message',
+                timestamp,
+                message
+            }));
+        }
+    });
 }
 
+// Discord Client Events
 client.on('ready', () => {
     console.log(`Logged in as ${client.user.tag}!`);
     botStatus = {
@@ -73,6 +121,26 @@ client.on('ready', () => {
         guilds: client.guilds.cache.map(g => g.name)
     };
     logToFile(`Bot started as ${client.user.tag}`);
+    
+    // Broadcast status update
+    wss.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({
+                type: 'status',
+                data: {
+                    loggedIn: true,
+                    username: botStatus.username,
+                    avatar: botStatus.avatar,
+                    uptime: process.uptime(),
+                    lastActivity: botStatus.lastActivity
+                }
+            }));
+            client.send(JSON.stringify({
+                type: 'servers',
+                data: botStatus.guilds
+            }));
+        }
+    });
 });
 
 client.on('messageCreate', (message) => {
@@ -98,15 +166,26 @@ client.on('voiceStateUpdate', (oldState, newState) => {
     }
 
     if (activity) {
-        logToFile(activity);
-        botStatus.voiceActivities.push({
-            timestamp: new Date().toISOString(),
-            content: activity
-        });
+        const timestamp = new Date().toISOString();
+        const entry = { timestamp, content: activity };
+        botStatus.voiceActivities.push(entry);
+        botStatus.lastActivity = timestamp;
         
         if (botStatus.voiceActivities.length > 50) {
             botStatus.voiceActivities.shift();
         }
+        
+        logToFile(activity);
+        
+        wss.clients.forEach(client => {
+            if (client.readyState === WebSocket.OPEN) {
+                client.send(JSON.stringify({
+                    type: 'voice',
+                    timestamp,
+                    message: activity
+                }));
+            }
+        });
     }
 });
 
@@ -142,9 +221,25 @@ Evidence:`;
     }
 });
 
+// Error handling
 process.on('unhandledRejection', error => {
     console.error('Unhandled rejection:', error);
     logToFile(`Unhandled rejection: ${error.message}`);
 });
 
+// Start the bot
 client.login(process.env.DISCORD_TOKEN);
+
+// Uptime broadcast
+setInterval(() => {
+    wss.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({
+                type: 'status',
+                data: {
+                    uptime: process.uptime()
+                }
+            }));
+        }
+    });
+}, 10000);
